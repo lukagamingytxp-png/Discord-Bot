@@ -18,7 +18,8 @@ log = logging.getLogger("AternosBot")
 # ── Config ────────────────────────────────────────────────────────────────────
 DISCORD_TOKEN    = os.getenv("DISCORD_TOKEN")
 DATABASE_URL     = os.getenv("DATABASE_URL")
-ATERNOS_SESSION  = os.getenv("ATERNOS_SESSION")
+ATERNOS_USERNAME = os.getenv("ATERNOS_USERNAME")
+ATERNOS_PASSWORD = os.getenv("ATERNOS_PASSWORD")
 SERVER_IP        = "Tr1alSMP.aternos.me"
 DISCORD_INVITE   = "discord.gg/TrialsSMP"
 FOOTER_TEXT      = f"🌐 {SERVER_IP}  •  💬 {DISCORD_INVITE}"
@@ -73,7 +74,7 @@ def info_embed(title, description="", colour=BLUE):
 # ── Aternos helpers ───────────────────────────────────────────────────────────
 def get_aternos_client():
     from python_aternos import Client
-    return Client.from_session(ATERNOS_SESSION)
+    return Client.from_credentials(ATERNOS_USERNAME, ATERNOS_PASSWORD)
 
 def get_server(client):
     servers = client.list_servers()
@@ -132,8 +133,8 @@ def _handle_exc(exc, cmd):
     msg = str(exc).lower()
     if "captcha" in msg:
         return error_embed("CAPTCHA Required", "Aternos triggered a CAPTCHA. Log into Aternos manually in your browser, then try again.")
-    if any(x in msg for x in ("session", "login", "cookie", "401", "403")):
-        return error_embed("Invalid Session", "The Aternos session cookie has expired.\nUpdate `ATERNOS_SESSION` in your environment variables.")
+    if any(x in msg for x in ("credentials", "password", "username", "login", "401", "403")):
+        return error_embed("Invalid Credentials", "Wrong username or password.\nCheck `ATERNOS_USERNAME` and `ATERNOS_PASSWORD` in your environment variables.")
     if "queue" in msg:
         return error_embed("Queue Error", f"Aternos queue error: `{exc}`\nThe server may be starting — try `+status`.")
     if "timeout" in msg or "timed out" in msg:
@@ -208,13 +209,13 @@ async def start_cmd(ctx):
             return
 
         if status in ("starting", "loading", "preparing"):
-            queue    = getattr(server, "queue_position", None)
-            eta      = getattr(server, "time_until_up", None)
+            queue = getattr(server, "queue_position", None)
+            eta   = getattr(server, "time_until_up", None)
             embed = info_embed("🔄  Server Is Already Starting…", colour=YELLOW)
-            embed.add_field(name="🌐 Server IP",      value=f"`{SERVER_IP}`",                          inline=True)
-            embed.add_field(name="📦 Version",        value=server.version or "?",                     inline=True)
+            embed.add_field(name="🌐 Server IP",      value=f"`{SERVER_IP}`",                               inline=True)
+            embed.add_field(name="📦 Version",        value=server.version or "?",                          inline=True)
             embed.add_field(name="📋 Queue Position", value=f"Position **#{queue}**" if queue else "Unknown", inline=True)
-            embed.add_field(name="⏱️ Estimated Wait", value=f"~{eta} seconds" if eta else "Calculating…", inline=True)
+            embed.add_field(name="⏱️ Estimated Wait", value=f"~{eta} seconds" if eta else "Calculating…",   inline=True)
             embed.set_footer(text=FOOTER_TEXT)
             await thinking.edit(embed=embed)
             await log_command(ctx.author.id, "start", "already_starting")
@@ -358,8 +359,10 @@ async def logs_cmd(ctx):
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
         raise SystemExit("DISCORD_TOKEN is not set in .env")
-    if not ATERNOS_SESSION:
-        raise SystemExit("ATERNOS_SESSION is not set in .env")
+    if not ATERNOS_USERNAME:
+        raise SystemExit("ATERNOS_USERNAME is not set in .env")
+    if not ATERNOS_PASSWORD:
+        raise SystemExit("ATERNOS_PASSWORD is not set in .env")
     if not DATABASE_URL:
         raise SystemExit("DATABASE_URL is not set in .env")
     keep_alive()
