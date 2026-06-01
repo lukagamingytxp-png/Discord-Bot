@@ -109,32 +109,32 @@ async def aternos_action(action: str):
         try:
             # ── Login ──────────────────────────────────────────────────────
             log.info("Navigating to Aternos login page...")
-            await page.goto("https://aternos.org/go/", wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(2000)
+            await page.goto("https://aternos.org/go/", wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(4000)
 
             # Fill username
-            await page.fill("#user", ATERNOS_USERNAME, timeout=10000)
-            await page.wait_for_timeout(500)
+            await page.fill("#user", ATERNOS_USERNAME, timeout=20000)
+            await page.wait_for_timeout(1000)
 
             # Fill password
-            await page.fill("#password", ATERNOS_PASSWORD, timeout=10000)
-            await page.wait_for_timeout(500)
+            await page.fill("#password", ATERNOS_PASSWORD, timeout=20000)
+            await page.wait_for_timeout(1000)
 
             # Click login
-            await page.click("#login-button", timeout=10000)
-            await page.wait_for_timeout(3000)
+            await page.click("#login-button", timeout=20000)
+            await page.wait_for_timeout(5000)
 
             # Check for CAPTCHA
             if await page.query_selector(".h-captcha") or await page.query_selector("#hcaptcha"):
                 raise RuntimeError("CAPTCHA detected — cannot proceed automatically.")
 
             # Check login succeeded by looking for server list
-            await page.wait_for_url("**/servers**", timeout=15000)
+            await page.wait_for_url("**/servers**", timeout=30000)
             log.info("Logged in successfully.")
 
             # ── Navigate to server ─────────────────────────────────────────
-            await page.goto("https://aternos.org/server/", wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(3000)
+            await page.goto("https://aternos.org/server/", wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(5000)
 
             # ── Scrape current status ──────────────────────────────────────
             async def scrape_status():
@@ -195,7 +195,7 @@ async def aternos_action(action: str):
                 if not btn:
                     raise RuntimeError("Could not find the Start button on the page.")
                 await btn.click()
-                await page.wait_for_timeout(4000)
+                await page.wait_for_timeout(6000)
                 return {**await scrape_status(), "already": None}
 
             elif action == "stop":
@@ -207,7 +207,7 @@ async def aternos_action(action: str):
                 if not btn:
                     raise RuntimeError("Could not find the Stop button on the page.")
                 await btn.click()
-                await page.wait_for_timeout(3000)
+                await page.wait_for_timeout(5000)
                 return {**await scrape_status(), "already": None}
 
             elif action == "restart":
@@ -219,7 +219,7 @@ async def aternos_action(action: str):
                 if not btn:
                     raise RuntimeError("Could not find the Restart button on the page.")
                 await btn.click()
-                await page.wait_for_timeout(3000)
+                await page.wait_for_timeout(5000)
                 return {**await scrape_status(), "already": None}
 
         except PlaywrightTimeout as e:
