@@ -6,6 +6,7 @@ import asyncio
 import asyncpg
 import os
 import logging
+import subprocess
 from datetime import datetime
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -15,6 +16,11 @@ load_dotenv()
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 log = logging.getLogger("AternosBot")
+
+# ── Install Chromium at runtime (required on Render free tier) ────────────────
+log.info("Installing Chromium...")
+subprocess.run(["playwright", "install", "chromium"], check=True)
+log.info("Chromium ready.")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 DISCORD_TOKEN    = os.getenv("DISCORD_TOKEN")
