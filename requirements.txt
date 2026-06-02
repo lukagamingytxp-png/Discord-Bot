@@ -1,4 +1,4 @@
 discord.py==2.3.2
+python-aternos==3.0.5
 asyncpg==0.29.0
 python-dotenv==1.0.1
-playwright==1.44.0

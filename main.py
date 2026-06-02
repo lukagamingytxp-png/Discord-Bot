@@ -6,21 +6,14 @@ import asyncio
 import asyncpg
 import os
 import logging
-import subprocess
 from datetime import datetime
 from dotenv import load_dotenv
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
 load_dotenv()
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 log = logging.getLogger("AternosBot")
-
-# ── Install Chromium at runtime (required on Render free tier) ────────────────
-log.info("Installing Chromium...")
-subprocess.run(["playwright", "install", "chromium"], check=True)
-log.info("Chromium ready.")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 DISCORD_TOKEN    = os.getenv("DISCORD_TOKEN")
@@ -48,7 +41,6 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
         self.wfile.write(b"Tr1alSMP bot is alive!")
-
     def log_message(self, *_):
         pass
 
@@ -78,154 +70,18 @@ def success_embed(title, description=""):
 def info_embed(title, description="", colour=BLUE):
     return make_footer(discord.Embed(title=title, description=description, color=colour))
 
-# ── Aternos Playwright automation ─────────────────────────────────────────────
-async def aternos_action(action: str):
-    """
-    action: "start" | "stop" | "restart" | "status"
-    Returns a dict with keys: status, players_on, players_max, players_list, version, motd, queue, eta
-    Raises RuntimeError with a descriptive message on failure.
-    """
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--single-process",
-            ],
-        )
-        context = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1280, "height": 800},
-        )
-        page = await context.new_page()
+# ── Aternos helpers ───────────────────────────────────────────────────────────
+def get_aternos_client():
+    from python_aternos import Client
+    atclient = Client()
+    atclient.login(ATERNOS_USERNAME, ATERNOS_PASSWORD)
+    return atclient
 
-        try:
-            # ── Login ──────────────────────────────────────────────────────
-            log.info("Navigating to Aternos login page...")
-            await page.goto("https://aternos.org/go/", wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(4000)
-
-            # Fill username
-            await page.fill("#user", ATERNOS_USERNAME, timeout=20000)
-            await page.wait_for_timeout(1000)
-
-            # Fill password
-            await page.fill("#password", ATERNOS_PASSWORD, timeout=20000)
-            await page.wait_for_timeout(1000)
-
-            # Click login
-            await page.click("#login-button", timeout=20000)
-            await page.wait_for_timeout(5000)
-
-            # Check for CAPTCHA
-            if await page.query_selector(".h-captcha") or await page.query_selector("#hcaptcha"):
-                raise RuntimeError("CAPTCHA detected — cannot proceed automatically.")
-
-            # Check login succeeded by looking for server list
-            await page.wait_for_url("**/servers**", timeout=30000)
-            log.info("Logged in successfully.")
-
-            # ── Navigate to server ─────────────────────────────────────────
-            await page.goto("https://aternos.org/server/", wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(5000)
-
-            # ── Scrape current status ──────────────────────────────────────
-            async def scrape_status():
-                data = {}
-
-                # Status label
-                status_el = await page.query_selector(".statuslabel-label")
-                data["status"] = (await status_el.inner_text()).strip().lower() if status_el else "unknown"
-
-                # Players
-                players_el = await page.query_selector(".server-status-players")
-                if players_el:
-                    txt = (await players_el.inner_text()).strip()  # e.g. "2/20"
-                    parts = txt.split("/")
-                    data["players_on"]  = parts[0].strip() if len(parts) > 0 else "0"
-                    data["players_max"] = parts[1].strip() if len(parts) > 1 else "20"
-                else:
-                    data["players_on"]  = "0"
-                    data["players_max"] = "20"
-
-                # Player list
-                player_els = await page.query_selector_all(".player-list .player")
-                data["players_list"] = [await el.inner_text() for el in player_els]
-
-                # Version
-                ver_el = await page.query_selector(".server-software-version")
-                data["version"] = (await ver_el.inner_text()).strip() if ver_el else "?"
-
-                # MOTD
-                motd_el = await page.query_selector(".server-motd")
-                data["motd"] = (await motd_el.inner_text()).strip() if motd_el else ""
-
-                # Queue / ETA
-                queue_el = await page.query_selector(".queue-position")
-                data["queue"] = (await queue_el.inner_text()).strip() if queue_el else None
-
-                eta_el = await page.query_selector(".queue-time")
-                data["eta"] = (await eta_el.inner_text()).strip() if eta_el else None
-
-                return data
-
-            if action == "status":
-                return await scrape_status()
-
-            # ── Perform action ─────────────────────────────────────────────
-            current = await scrape_status()
-            current_status = current["status"]
-
-            if action == "start":
-                if current_status == "online":
-                    return {**current, "already": "online"}
-                if current_status in ("starting", "loading", "preparing"):
-                    return {**current, "already": "starting"}
-                # Click start button
-                btn = await page.query_selector("#start")
-                if not btn:
-                    btn = await page.query_selector(".server-start")
-                if not btn:
-                    raise RuntimeError("Could not find the Start button on the page.")
-                await btn.click()
-                await page.wait_for_timeout(6000)
-                return {**await scrape_status(), "already": None}
-
-            elif action == "stop":
-                if current_status == "offline":
-                    return {**current, "already": "offline"}
-                btn = await page.query_selector("#stop")
-                if not btn:
-                    btn = await page.query_selector(".server-stop")
-                if not btn:
-                    raise RuntimeError("Could not find the Stop button on the page.")
-                await btn.click()
-                await page.wait_for_timeout(5000)
-                return {**await scrape_status(), "already": None}
-
-            elif action == "restart":
-                if current_status == "offline":
-                    return {**current, "already": "offline"}
-                btn = await page.query_selector("#restart")
-                if not btn:
-                    btn = await page.query_selector(".server-restart")
-                if not btn:
-                    raise RuntimeError("Could not find the Restart button on the page.")
-                await btn.click()
-                await page.wait_for_timeout(5000)
-                return {**await scrape_status(), "already": None}
-
-        except PlaywrightTimeout as e:
-            raise RuntimeError(f"Timed out while talking to Aternos: {e}")
-        finally:
-            await browser.close()
+def get_server(client):
+    servers = client.list_servers()
+    if not servers:
+        raise RuntimeError("No Aternos servers found on this account.")
+    return servers[0]
 
 # ── Database helpers ──────────────────────────────────────────────────────────
 async def init_db():
@@ -277,13 +133,13 @@ async def log_command(user_id, command, result):
 def _handle_exc(exc, cmd):
     msg = str(exc).lower()
     if "captcha" in msg:
-        return error_embed("CAPTCHA Required", "Aternos triggered a CAPTCHA check and the bot can't proceed.\nTry again in a few minutes.")
-    if any(x in msg for x in ("login", "credentials", "password", "username")):
+        return error_embed("CAPTCHA Required", "Aternos triggered a CAPTCHA. Try again in a few minutes.")
+    if any(x in msg for x in ("credentials", "password", "username", "login", "401", "403", "token")):
         return error_embed("Login Failed", "Could not log into Aternos.\nCheck `ATERNOS_USERNAME` and `ATERNOS_PASSWORD` in your environment variables.")
-    if "timed out" in msg or "timeout" in msg:
-        return error_embed("Timeout", "Aternos took too long to respond. Try again in a moment.")
-    if "start button" in msg or "stop button" in msg or "restart button" in msg:
-        return error_embed("Button Not Found", f"Could not find the button on the Aternos page.\nAternos may have updated their site.")
+    if "queue" in msg:
+        return error_embed("Queue Error", f"Aternos queue error: `{exc}`\nTry `+status`.")
+    if "timeout" in msg or "timed out" in msg:
+        return error_embed("Timeout", "Aternos took too long to respond. Try again.")
     log.exception(f"Unclassified error in +{cmd}", exc_info=exc)
     return error_embed("Error", f"```{str(exc)[:1000]}```")
 
@@ -325,44 +181,51 @@ async def start_cmd(ctx):
     remaining = await check_cooldown(ctx.author.id, "start")
     if remaining:
         mins, secs = divmod(remaining, 60)
-        await ctx.send(embed=error_embed("Cooldown Active",
-            f"You can use `+start` again in **{mins}m {secs}s**."))
+        await ctx.send(embed=error_embed("Cooldown Active", f"You can use `+start` again in **{mins}m {secs}s**."))
         await log_command(ctx.author.id, "start", f"cooldown:{remaining}s")
         return
 
-    thinking = await ctx.send(embed=info_embed("⏳  Connecting to Aternos…", "This may take up to 30 seconds.", colour=YELLOW))
+    thinking = await ctx.send(embed=info_embed("⏳  Connecting to Aternos…", colour=YELLOW))
     try:
-        data = await aternos_action("start")
+        client = get_aternos_client()
+        server = get_server(client)
+        status = server.status
 
-        if data.get("already") == "online":
-            players = data.get("players_list", [])
+        if status == "online":
+            players = server.players_list or []
             player_names = "\n".join(f"• {p}" for p in players) if players else "*No players online*"
             embed = info_embed("🟢  Server Already Online", colour=GREEN)
             embed.add_field(name="🌐 Server IP",      value=f"`{SERVER_IP}`", inline=True)
-            embed.add_field(name="📦 Version",        value=data.get("version", "?"), inline=True)
-            embed.add_field(name="👥 Players Online", value=f"{data.get('players_on','0')}/{data.get('players_max','20')}", inline=True)
+            embed.add_field(name="📦 Version",        value=server.version or "?", inline=True)
+            embed.add_field(name="👥 Players Online", value=f"{server.players_on}/{server.players_max}", inline=True)
             embed.add_field(name="📋 Player List",    value=player_names, inline=False)
             embed.set_footer(text=FOOTER_TEXT)
             await thinking.edit(embed=embed)
             await log_command(ctx.author.id, "start", "already_online")
             return
 
-        if data.get("already") == "starting":
+        if status in ("starting", "loading", "preparing"):
+            queue = getattr(server, "queue_position", None)
+            eta   = getattr(server, "time_until_up", None)
             embed = info_embed("🔄  Server Is Already Starting…", colour=YELLOW)
             embed.add_field(name="🌐 Server IP",      value=f"`{SERVER_IP}`", inline=True)
-            embed.add_field(name="📦 Version",        value=data.get("version", "?"), inline=True)
-            embed.add_field(name="📋 Queue Position", value=data.get("queue") or "In queue…", inline=True)
-            embed.add_field(name="⏱️ Estimated Wait", value=data.get("eta") or "Calculating…", inline=True)
+            embed.add_field(name="📦 Version",        value=server.version or "?", inline=True)
+            embed.add_field(name="📋 Queue Position", value=f"#{queue}" if queue else "In queue…", inline=True)
+            embed.add_field(name="⏱️ Estimated Wait", value=f"~{eta}s" if eta else "Calculating…", inline=True)
             embed.set_footer(text=FOOTER_TEXT)
             await thinking.edit(embed=embed)
             await log_command(ctx.author.id, "start", "already_starting")
             return
 
+        server.start()
+        server = get_server(client)
+        queue = getattr(server, "queue_position", None)
+        eta   = getattr(server, "time_until_up", None)
         embed = success_embed("Server is Starting! 🚀", "The server is booting up. It may take a few minutes.")
         embed.add_field(name="🌐 Server IP",      value=f"`{SERVER_IP}`", inline=True)
-        embed.add_field(name="📦 Version",        value=data.get("version", "?"), inline=True)
-        embed.add_field(name="📋 Queue Position", value=data.get("queue") or "In queue…", inline=True)
-        embed.add_field(name="⏱️ Estimated Wait", value=data.get("eta") or "Calculating…", inline=True)
+        embed.add_field(name="📦 Version",        value=server.version or "?", inline=True)
+        embed.add_field(name="📋 Queue Position", value=f"#{queue}" if queue else "In queue…", inline=True)
+        embed.add_field(name="⏱️ Estimated Wait", value=f"~{eta}s" if eta else "Calculating…", inline=True)
         embed.set_footer(text=FOOTER_TEXT)
         await thinking.edit(embed=embed)
         await set_cooldown(ctx.author.id, "start")
@@ -376,9 +239,8 @@ async def start_cmd(ctx):
 @bot.command(name="stop")
 @commands.has_permissions(administrator=True)
 async def stop_cmd(ctx):
-    confirm = info_embed("⚠️  Confirm Server Stop",
-        "Are you sure you want to **stop** the Minecraft server?\nReply `yes` within 15 seconds to confirm.", colour=ORANGE)
-    await ctx.send(embed=confirm)
+    await ctx.send(embed=info_embed("⚠️  Confirm Server Stop",
+        "Are you sure you want to **stop** the server?\nReply `yes` within 15 seconds.", colour=ORANGE))
 
     def check(m):
         return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ("yes", "no")
@@ -386,7 +248,7 @@ async def stop_cmd(ctx):
     try:
         msg = await bot.wait_for("message", timeout=15.0, check=check)
     except asyncio.TimeoutError:
-        await ctx.send(embed=info_embed("⏰  Timed Out", "Stop cancelled — no confirmation received.", colour=GREY))
+        await ctx.send(embed=info_embed("⏰  Timed Out", "Stop cancelled.", colour=GREY))
         await log_command(ctx.author.id, "stop", "timeout")
         return
 
@@ -395,13 +257,15 @@ async def stop_cmd(ctx):
         await log_command(ctx.author.id, "stop", "cancelled")
         return
 
-    thinking = await ctx.send(embed=info_embed("⏳  Stopping server…", "This may take up to 30 seconds.", colour=YELLOW))
+    thinking = await ctx.send(embed=info_embed("⏳  Stopping server…", colour=YELLOW))
     try:
-        data = await aternos_action("stop")
-        if data.get("already") == "offline":
+        client = get_aternos_client()
+        server = get_server(client)
+        if server.status == "offline":
             await thinking.edit(embed=error_embed("Already Offline", "The server is already offline."))
             await log_command(ctx.author.id, "stop", "already_offline")
             return
+        server.stop()
         embed = success_embed("Server Stopped 🔴", "The server has been stopped successfully.")
         embed.add_field(name="🌐 Server IP", value=f"`{SERVER_IP}`", inline=True)
         embed.set_footer(text=FOOTER_TEXT)
@@ -415,16 +279,18 @@ async def stop_cmd(ctx):
 @bot.command(name="restart")
 @commands.has_permissions(administrator=True)
 async def restart_cmd(ctx):
-    thinking = await ctx.send(embed=info_embed("⏳  Restarting server…", "This may take up to 30 seconds.", colour=YELLOW))
+    thinking = await ctx.send(embed=info_embed("⏳  Restarting server…", colour=YELLOW))
     try:
-        data = await aternos_action("restart")
-        if data.get("already") == "offline":
+        client = get_aternos_client()
+        server = get_server(client)
+        if server.status == "offline":
             await thinking.edit(embed=error_embed("Server Offline", "Can't restart — server is offline. Use `+start` instead."))
             await log_command(ctx.author.id, "restart", "offline")
             return
+        server.restart()
         embed = success_embed("Server Restarting 🔄", "The server is restarting. It will come back online shortly.")
         embed.add_field(name="🌐 Server IP", value=f"`{SERVER_IP}`", inline=True)
-        embed.add_field(name="📦 Version",   value=data.get("version", "?"), inline=True)
+        embed.add_field(name="📦 Version",   value=server.version or "?", inline=True)
         embed.set_footer(text=FOOTER_TEXT)
         await thinking.edit(embed=embed)
         await log_command(ctx.author.id, "restart", "restarted")
@@ -435,19 +301,20 @@ async def restart_cmd(ctx):
 # ── +status ───────────────────────────────────────────────────────────────────
 @bot.command(name="status")
 async def status_cmd(ctx):
-    thinking = await ctx.send(embed=info_embed("⏳  Fetching status…", "This may take up to 30 seconds.", colour=YELLOW))
+    thinking = await ctx.send(embed=info_embed("⏳  Fetching status…", colour=YELLOW))
     try:
-        data = await aternos_action("status")
-        status = data.get("status", "unknown")
+        client = get_aternos_client()
+        server = get_server(client)
+        status = server.status
         colour = GREEN if status == "online" else (YELLOW if status in ("starting", "loading") else RED)
         emoji  = {"online": "🟢", "offline": "🔴", "starting": "🟡", "loading": "🟡", "stopping": "🟠"}.get(status, "⚪")
-        players = data.get("players_list", [])
+        players = server.players_list or []
         player_names = "\n".join(f"• {p}" for p in players) if players else "*No players online*"
         embed = info_embed(f"{emoji}  Server Status — {status.capitalize()}", colour=colour)
         embed.add_field(name="🌐 Server IP", value=f"`{SERVER_IP}`", inline=True)
-        embed.add_field(name="📦 Version",   value=data.get("version", "?"), inline=True)
-        embed.add_field(name="👥 Players",   value=f"{data.get('players_on','0')}/{data.get('players_max','20')}", inline=True)
-        embed.add_field(name="📝 MOTD",      value=data.get("motd") or "*Not set*", inline=False)
+        embed.add_field(name="📦 Version",   value=server.version or "?", inline=True)
+        embed.add_field(name="👥 Players",   value=f"{server.players_on}/{server.players_max}", inline=True)
+        embed.add_field(name="📝 MOTD",      value=server.motd or "*Not set*", inline=False)
         if status == "online":
             embed.add_field(name="📋 Player List", value=player_names, inline=False)
         embed.set_footer(text=FOOTER_TEXT)
@@ -461,9 +328,25 @@ async def status_cmd(ctx):
 @bot.command(name="logs")
 @commands.has_permissions(administrator=True)
 async def logs_cmd(ctx):
-    await ctx.send(embed=info_embed("📜  Logs Unavailable",
-        "Console logs require the Aternos page to be open.\nUse `+status` to check if the server is online.", colour=GREY))
-    await log_command(ctx.author.id, "logs", "unavailable")
+    thinking = await ctx.send(embed=info_embed("⏳  Fetching console logs…", colour=YELLOW))
+    try:
+        client = get_aternos_client()
+        server = get_server(client)
+        if server.status == "offline":
+            await thinking.edit(embed=error_embed("Server Offline", "Logs unavailable while the server is offline."))
+            await log_command(ctx.author.id, "logs", "offline")
+            return
+        raw_logs = server.get_logs()
+        lines = raw_logs.strip().splitlines()[-10:]
+        log_text = "\n".join(lines) if lines else "No log output available."
+        embed = info_embed("📜  Console — Last 10 Lines", colour=BLUE)
+        embed.description = f"```\n{log_text[:1900]}\n```"
+        embed.set_footer(text=FOOTER_TEXT)
+        await thinking.edit(embed=embed)
+        await log_command(ctx.author.id, "logs", "shown")
+    except Exception as exc:
+        await thinking.edit(embed=_handle_exc(exc, "logs"))
+        await log_command(ctx.author.id, "logs", f"error:{exc}")
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
