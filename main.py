@@ -8,6 +8,7 @@ import os
 import logging
 from datetime import datetime
 from dotenv import load_dotenv
+from python_aternos import Client
 
 load_dotenv()
 
@@ -33,6 +34,18 @@ YELLOW = 0xF1C40F
 BLUE   = 0x3498DB
 ORANGE = 0xE67E22
 GREY   = 0x95A5A6
+
+# ── Login to Aternos at startup ───────────────────────────────────────────────
+log.info("Logging into Aternos...")
+try:
+    aternos = Client(ATERNOS_USERNAME, password=ATERNOS_PASSWORD)
+    atservers = aternos.servers
+    myserv = atservers[0]
+    log.info(f"Aternos login successful. Server: {myserv.address}")
+except Exception as e:
+    log.error(f"Aternos login failed: {e}")
+    aternos = None
+    myserv = None
 
 # ── Keep-alive HTTP server ────────────────────────────────────────────────────
 class _Handler(BaseHTTPRequestHandler):
@@ -69,19 +82,6 @@ def success_embed(title, description=""):
 
 def info_embed(title, description="", colour=BLUE):
     return make_footer(discord.Embed(title=title, description=description, color=colour))
-
-# ── Aternos helpers ───────────────────────────────────────────────────────────
-def get_aternos_client():
-    from python_aternos import Client
-    atclient = Client()
-    atclient.login(ATERNOS_USERNAME, ATERNOS_PASSWORD)
-    return atclient
-
-def get_server(client):
-    servers = client.list_servers()
-    if not servers:
-        raise RuntimeError("No Aternos servers found on this account.")
-    return servers[0]
 
 # ── Database helpers ──────────────────────────────────────────────────────────
 async def init_db():
@@ -134,7 +134,7 @@ def _handle_exc(exc, cmd):
     msg = str(exc).lower()
     if "captcha" in msg:
         return error_embed("CAPTCHA Required", "Aternos triggered a CAPTCHA. Try again in a few minutes.")
-    if any(x in msg for x in ("credentials", "password", "username", "login", "401", "403", "token")):
+    if any(x in msg for x in ("credentials", "password", "username", "login", "401", "403", "token", "cloudflare", "bypass")):
         return error_embed("Login Failed", "Could not log into Aternos.\nCheck `ATERNOS_USERNAME` and `ATERNOS_PASSWORD` in your environment variables.")
     if "queue" in msg:
         return error_embed("Queue Error", f"Aternos queue error: `{exc}`\nTry `+status`.")
@@ -178,6 +178,10 @@ async def help_cmd(ctx):
 # ── +start ────────────────────────────────────────────────────────────────────
 @bot.command(name="start")
 async def start_cmd(ctx):
+    if myserv is None:
+        await ctx.send(embed=error_embed("Aternos Unavailable", "Bot failed to connect to Aternos on startup. Check logs."))
+        return
+
     remaining = await check_cooldown(ctx.author.id, "start")
     if remaining:
         mins, secs = divmod(remaining, 60)
@@ -187,17 +191,15 @@ async def start_cmd(ctx):
 
     thinking = await ctx.send(embed=info_embed("⏳  Connecting to Aternos…", colour=YELLOW))
     try:
-        client = get_aternos_client()
-        server = get_server(client)
-        status = server.status
+        status = myserv.status
 
         if status == "online":
-            players = server.players_list or []
+            players = myserv.players_list or []
             player_names = "\n".join(f"• {p}" for p in players) if players else "*No players online*"
             embed = info_embed("🟢  Server Already Online", colour=GREEN)
             embed.add_field(name="🌐 Server IP",      value=f"`{SERVER_IP}`", inline=True)
-            embed.add_field(name="📦 Version",        value=server.version or "?", inline=True)
-            embed.add_field(name="👥 Players Online", value=f"{server.players_on}/{server.players_max}", inline=True)
+            embed.add_field(name="📦 Version",        value=myserv.version or "?", inline=True)
+            embed.add_field(name="👥 Players Online", value=f"{myserv.players_on}/{myserv.players_max}", inline=True)
             embed.add_field(name="📋 Player List",    value=player_names, inline=False)
             embed.set_footer(text=FOOTER_TEXT)
             await thinking.edit(embed=embed)
@@ -205,11 +207,11 @@ async def start_cmd(ctx):
             return
 
         if status in ("starting", "loading", "preparing"):
-            queue = getattr(server, "queue_position", None)
-            eta   = getattr(server, "time_until_up", None)
+            queue = getattr(myserv, "queue_position", None)
+            eta   = getattr(myserv, "time_until_up", None)
             embed = info_embed("🔄  Server Is Already Starting…", colour=YELLOW)
             embed.add_field(name="🌐 Server IP",      value=f"`{SERVER_IP}`", inline=True)
-            embed.add_field(name="📦 Version",        value=server.version or "?", inline=True)
+            embed.add_field(name="📦 Version",        value=myserv.version or "?", inline=True)
             embed.add_field(name="📋 Queue Position", value=f"#{queue}" if queue else "In queue…", inline=True)
             embed.add_field(name="⏱️ Estimated Wait", value=f"~{eta}s" if eta else "Calculating…", inline=True)
             embed.set_footer(text=FOOTER_TEXT)
@@ -217,13 +219,12 @@ async def start_cmd(ctx):
             await log_command(ctx.author.id, "start", "already_starting")
             return
 
-        server.start()
-        server = get_server(client)
-        queue = getattr(server, "queue_position", None)
-        eta   = getattr(server, "time_until_up", None)
+        myserv.start()
+        queue = getattr(myserv, "queue_position", None)
+        eta   = getattr(myserv, "time_until_up", None)
         embed = success_embed("Server is Starting! 🚀", "The server is booting up. It may take a few minutes.")
         embed.add_field(name="🌐 Server IP",      value=f"`{SERVER_IP}`", inline=True)
-        embed.add_field(name="📦 Version",        value=server.version or "?", inline=True)
+        embed.add_field(name="📦 Version",        value=myserv.version or "?", inline=True)
         embed.add_field(name="📋 Queue Position", value=f"#{queue}" if queue else "In queue…", inline=True)
         embed.add_field(name="⏱️ Estimated Wait", value=f"~{eta}s" if eta else "Calculating…", inline=True)
         embed.set_footer(text=FOOTER_TEXT)
@@ -239,6 +240,10 @@ async def start_cmd(ctx):
 @bot.command(name="stop")
 @commands.has_permissions(administrator=True)
 async def stop_cmd(ctx):
+    if myserv is None:
+        await ctx.send(embed=error_embed("Aternos Unavailable", "Bot failed to connect to Aternos on startup."))
+        return
+
     await ctx.send(embed=info_embed("⚠️  Confirm Server Stop",
         "Are you sure you want to **stop** the server?\nReply `yes` within 15 seconds.", colour=ORANGE))
 
@@ -259,13 +264,11 @@ async def stop_cmd(ctx):
 
     thinking = await ctx.send(embed=info_embed("⏳  Stopping server…", colour=YELLOW))
     try:
-        client = get_aternos_client()
-        server = get_server(client)
-        if server.status == "offline":
+        if myserv.status == "offline":
             await thinking.edit(embed=error_embed("Already Offline", "The server is already offline."))
             await log_command(ctx.author.id, "stop", "already_offline")
             return
-        server.stop()
+        myserv.stop()
         embed = success_embed("Server Stopped 🔴", "The server has been stopped successfully.")
         embed.add_field(name="🌐 Server IP", value=f"`{SERVER_IP}`", inline=True)
         embed.set_footer(text=FOOTER_TEXT)
@@ -279,18 +282,20 @@ async def stop_cmd(ctx):
 @bot.command(name="restart")
 @commands.has_permissions(administrator=True)
 async def restart_cmd(ctx):
+    if myserv is None:
+        await ctx.send(embed=error_embed("Aternos Unavailable", "Bot failed to connect to Aternos on startup."))
+        return
+
     thinking = await ctx.send(embed=info_embed("⏳  Restarting server…", colour=YELLOW))
     try:
-        client = get_aternos_client()
-        server = get_server(client)
-        if server.status == "offline":
+        if myserv.status == "offline":
             await thinking.edit(embed=error_embed("Server Offline", "Can't restart — server is offline. Use `+start` instead."))
             await log_command(ctx.author.id, "restart", "offline")
             return
-        server.restart()
+        myserv.restart()
         embed = success_embed("Server Restarting 🔄", "The server is restarting. It will come back online shortly.")
         embed.add_field(name="🌐 Server IP", value=f"`{SERVER_IP}`", inline=True)
-        embed.add_field(name="📦 Version",   value=server.version or "?", inline=True)
+        embed.add_field(name="📦 Version",   value=myserv.version or "?", inline=True)
         embed.set_footer(text=FOOTER_TEXT)
         await thinking.edit(embed=embed)
         await log_command(ctx.author.id, "restart", "restarted")
@@ -301,20 +306,22 @@ async def restart_cmd(ctx):
 # ── +status ───────────────────────────────────────────────────────────────────
 @bot.command(name="status")
 async def status_cmd(ctx):
+    if myserv is None:
+        await ctx.send(embed=error_embed("Aternos Unavailable", "Bot failed to connect to Aternos on startup."))
+        return
+
     thinking = await ctx.send(embed=info_embed("⏳  Fetching status…", colour=YELLOW))
     try:
-        client = get_aternos_client()
-        server = get_server(client)
-        status = server.status
+        status = myserv.status
         colour = GREEN if status == "online" else (YELLOW if status in ("starting", "loading") else RED)
         emoji  = {"online": "🟢", "offline": "🔴", "starting": "🟡", "loading": "🟡", "stopping": "🟠"}.get(status, "⚪")
-        players = server.players_list or []
+        players = myserv.players_list or []
         player_names = "\n".join(f"• {p}" for p in players) if players else "*No players online*"
         embed = info_embed(f"{emoji}  Server Status — {status.capitalize()}", colour=colour)
         embed.add_field(name="🌐 Server IP", value=f"`{SERVER_IP}`", inline=True)
-        embed.add_field(name="📦 Version",   value=server.version or "?", inline=True)
-        embed.add_field(name="👥 Players",   value=f"{server.players_on}/{server.players_max}", inline=True)
-        embed.add_field(name="📝 MOTD",      value=server.motd or "*Not set*", inline=False)
+        embed.add_field(name="📦 Version",   value=myserv.version or "?", inline=True)
+        embed.add_field(name="👥 Players",   value=f"{myserv.players_on}/{myserv.players_max}", inline=True)
+        embed.add_field(name="📝 MOTD",      value=myserv.motd or "*Not set*", inline=False)
         if status == "online":
             embed.add_field(name="📋 Player List", value=player_names, inline=False)
         embed.set_footer(text=FOOTER_TEXT)
@@ -328,15 +335,17 @@ async def status_cmd(ctx):
 @bot.command(name="logs")
 @commands.has_permissions(administrator=True)
 async def logs_cmd(ctx):
+    if myserv is None:
+        await ctx.send(embed=error_embed("Aternos Unavailable", "Bot failed to connect to Aternos on startup."))
+        return
+
     thinking = await ctx.send(embed=info_embed("⏳  Fetching console logs…", colour=YELLOW))
     try:
-        client = get_aternos_client()
-        server = get_server(client)
-        if server.status == "offline":
+        if myserv.status == "offline":
             await thinking.edit(embed=error_embed("Server Offline", "Logs unavailable while the server is offline."))
             await log_command(ctx.author.id, "logs", "offline")
             return
-        raw_logs = server.get_logs()
+        raw_logs = myserv.get_logs()
         lines = raw_logs.strip().splitlines()[-10:]
         log_text = "\n".join(lines) if lines else "No log output available."
         embed = info_embed("📜  Console — Last 10 Lines", colour=BLUE)
